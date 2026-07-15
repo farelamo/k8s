@@ -70,33 +70,39 @@ kubectl apply -f clusters/workload-cluster.yaml
 
 ```
 k8s/
+├── kustomization.yaml             # Root kustomization (kubectl apply -k .)
 ├── README.md
+├── docs/
+│   ├── 01-kubernetes-101.md       # Penjelasan K8s dari nol
+│   └── 02-deployment-guide.md     # Step-by-step deploy (15 phases)
 ├── clusters/
-│   ├── management-cluster.yaml    # Management cluster definition
-│   └── workload-cluster.yaml      # Workload cluster dengan autoscaling
+│   └── fariz-workload-cluster.yaml  # Workload cluster CAPI manifest
 ├── infrastructure/
 │   ├── gcp-credentials.yaml       # GCP service account (template)
-│   ├── network.yaml               # VPC, Subnet, Firewall
+│   ├── network.yaml               # VPC/Subnet reference
 │   └── machine-templates.yaml     # GCE machine templates
 ├── autoscaling/
-│   ├── cluster-autoscaler.yaml    # Cluster Autoscaler deployment
-│   └── machinepool.yaml           # MachinePool for autoscaling
+│   └── base/
+│       ├── kustomization.yaml
+│       ├── cluster-autoscaler.yaml
+│       └── machinedeployment-general.yaml
 ├── addons/
 │   ├── cilium.yaml                # Cilium CNI (ClusterResourceSet)
-│   ├── cilium-helm-values.yaml    # Cilium Helm values (kube-proxy replacement)
-│   ├── cilium-networkpolicies.yaml # Contoh Cilium Network Policies
-│   ├── hubble-ingress.yaml        # Hubble UI (observability) Ingress
-│   ├── metrics-server.yaml        # Metrics server
-│   ├── cloud-provider-gcp.yaml    # GCP cloud provider
-│   ├── traefik.yaml               # Traefik Ingress (ClusterResourceSet)
-│   ├── traefik-helm-values.yaml   # Traefik Helm values (alternatif)
-│   ├── cert-manager.yaml          # cert-manager (ClusterResourceSet)
-│   ├── cert-manager-helm-values.yaml  # cert-manager Helm values
-│   ├── cert-manager-issuers.yaml  # Let's Encrypt ClusterIssuers
-│   └── cert-manager-example.yaml  # Contoh penggunaan + middlewares
+│   ├── cilium-helm-values.yaml    # Cilium Helm values
+│   ├── cilium-networkpolicies.yaml
+│   ├── hubble-ingress.yaml        # Hubble UI Ingress
+│   ├── cloud-provider-gcp.yaml    # GCP Cloud Controller Manager
+│   ├── metrics-server.yaml
+│   ├── traefik.yaml               # Traefik (ClusterResourceSet)
+│   ├── traefik-helm-values.yaml
+│   ├── cert-manager.yaml
+│   ├── cert-manager-helm-values.yaml
+│   ├── cert-manager-issuers.yaml
+│   └── cert-manager-example.yaml
 ├── jenkins/
-│   ├── README.md                  # Dokumentasi Jenkins
-│   ├── manifests/                 # Kubernetes manifests
+│   ├── README.md
+│   ├── helm-values.yaml
+│   ├── manifests/
 │   │   ├── namespace.yaml
 │   │   ├── rbac.yaml
 │   │   ├── pvc.yaml
@@ -105,14 +111,24 @@ k8s/
 │   │   ├── service.yaml
 │   │   ├── ingress.yaml
 │   │   └── secrets.yaml
-│   ├── helm-values.yaml           # Helm install (alternatif)
 │   └── pipelines/
-│       ├── Jenkinsfile-example    # Contoh pipeline
+│       ├── Jenkinsfile-example
 │       └── app-manifests/
-│           └── deployment.yaml    # Contoh app yang di-deploy
+│           └── deployment.yaml
 └── scripts/
     ├── 01-setup-gcp.sh
     ├── 02-bootstrap-management.sh
     ├── 03-install-capi.sh
     └── 04-pivot-management.sh
 ```
+
+## Quick Start
+
+```bash
+# Lihat full deployment guide
+cat docs/02-deployment-guide.md
+
+# Apply semua via Kustomize (setelah cluster ready)
+kubectl apply -k .
+```
+
