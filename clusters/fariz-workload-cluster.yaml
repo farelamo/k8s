@@ -115,9 +115,6 @@ spec:
     spec:
       instanceType: e2-medium
       image: projects/${GCP_PROJECT_ID}/global/images/fariz-k8s-node-v1310
-      rootVolume:
-        sizeGb: 50
-        diskType: pd-ssd
       additionalLabels:
         cluster: fariz-workload-cluster
         role: control-plane
@@ -168,9 +165,6 @@ spec:
     spec:
       instanceType: e2-medium
       image: projects/${GCP_PROJECT_ID}/global/images/fariz-k8s-node-v1310
-      rootVolume:
-        sizeGb: 100
-        diskType: pd-standard
       additionalLabels:
         cluster: fariz-workload-cluster
         role: worker

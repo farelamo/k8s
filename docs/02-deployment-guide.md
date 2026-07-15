@@ -269,7 +269,7 @@ gcloud compute instances create fariz-k8s-image-builder \
   --machine-type=e2-medium \
   --image-project=ubuntu-os-cloud \
   --image-family=ubuntu-2404-lts-amd64 \
-  --boot-disk-size=20GB \
+  --boot-disk-size=30GB \
   --network-interface=network=pcs-production,subnet=pcs-kubernetes
 
 # SSH ke VM itu

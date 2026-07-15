@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+# Cluster
+- clusters/fariz-workload-cluster.yaml
+
+# Addons (ClusterResourceSets)
+- addons/cilium.yaml
+- addons/cilium-networkpolicies.yaml
+- addons/cloud-provider-gcp.yaml
+- addons/metrics-server.yaml
+- addons/traefik.yaml
+- addons/cert-manager.yaml
+- addons/cert-manager-issuers.yaml
+- addons/hubble-ingress.yaml
+
+# Autoscaling
+- autoscaling/base/machinedeployment-general.yaml
+- autoscaling/base/cluster-autoscaler.yaml
+
+# Jenkins
+- jenkins/manifests/namespace.yaml
+- jenkins/manifests/rbac.yaml
+- jenkins/manifests/pvc.yaml
+- jenkins/manifests/configmap-casc.yaml
+- jenkins/manifests/statefulset.yaml
+- jenkins/manifests/service.yaml
+- jenkins/manifests/ingress.yaml
+- jenkins/manifests/secrets.yaml

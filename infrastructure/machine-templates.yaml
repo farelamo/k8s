@@ -10,8 +10,8 @@ spec:
     spec:
       instanceType: e2-medium
       image: projects/your-project-id/global/images/fariz-k8s-node-v1310
-      rootVolume:
-        sizeGb: 50
+      rootDisk:
+        sizeGb: 30
         diskType: pd-ssd
       additionalLabels:
         cluster: workload-cluster
@@ -32,8 +32,8 @@ spec:
     spec:
       instanceType: e2-medium
       image: projects/your-project-id/global/images/fariz-k8s-node-v1310
-      rootVolume:
-        sizeGb: 100
+      rootDisk:
+        sizeGb: 30
         diskType: pd-standard
       additionalLabels:
         cluster: workload-cluster
@@ -55,8 +55,8 @@ spec:
     spec:
       instanceType: e2-medium
       image: projects/your-project-id/global/images/fariz-k8s-node-v1310
-      rootVolume:
-        sizeGb: 100
+      rootDisk:
+        sizeGb: 30
         diskType: pd-standard
       additionalLabels:
         cluster: workload-cluster
