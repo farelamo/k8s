@@ -1,0 +1,209 @@
+---
+# ============================================================
+# Workload Cluster Definition
+# Menggunakan CAPI + CAPG (GCP Provider) + kubeadm
+# ============================================================
+
+# Cluster Resource
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: fariz-workload-cluster
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - "10.244.0.0/16"
+    services:
+      cidrBlocks:
+      - "10.96.0.0/12"
+    serviceDomain: "cluster.local"
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: GCPCluster
+    name: fariz-workload-cluster
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: fariz-workload-cluster-cp
+
+---
+# GCP Cluster Infrastructure
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPCluster
+metadata:
+  name: fariz-workload-cluster
+  namespace: default
+spec:
+  project: "${GCP_PROJECT_ID}"
+  region: "asia-southeast2"
+  network:
+    name: "pcs-production"
+    autoCreateSubnetworks: false
+    subnets:
+    - name: "pcs-kubernetes"
+      cidrBlock: "10.88.18.0/24"
+      region: "asia-southeast2"
+
+---
+# Control Plane (HA - 3 nodes)
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: fariz-workload-cluster-cp
+  namespace: default
+spec:
+  replicas: 3
+  version: "v1.31.0"
+  machineTemplate:
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: GCPMachineTemplate
+      name: workload-cp-template
+  kubeadmConfigSpec:
+    initConfiguration:
+      # Disable kube-proxy — Cilium akan handle Service routing
+      skipPhases:
+      - addon/kube-proxy
+      nodeRegistration:
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+          cloud-provider: external
+    joinConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+          cloud-provider: external
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          cloud-provider: external
+      controllerManager:
+        extraArgs:
+          cloud-provider: external
+          allocate-node-cidrs: "false"  # Cilium handles IPAM
+          cluster-cidr: "10.244.0.0/16"
+    files:
+    - path: /etc/kubernetes/cloud-config
+      owner: "root:root"
+      permissions: "0644"
+      content: |
+        [Global]
+        project-id = ${GCP_PROJECT_ID}
+        regional = true
+    preKubeadmCommands:
+    - echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+    - echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.conf
+    - sysctl -p
+    # Mount BPF filesystem (required by Cilium)
+    - mount bpffs /sys/fs/bpf -t bpf || true
+    - echo "bpffs /sys/fs/bpf bpf defaults 0 0" >> /etc/fstab
+    postKubeadmCommands: []
+
+---
+# GCP Machine Template - Control Plane
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: workload-cp-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/${GCP_PROJECT_ID}/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 50
+        diskType: pd-ssd
+      additionalLabels:
+        cluster: fariz-workload-cluster
+        role: control-plane
+      additionalNetworkTags:
+      - apiserver
+      - control-plane
+      subnet: pcs-kubernetes
+
+---
+# Worker MachineDeployment (autoscalable)
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: fariz-workload-cluster-workers
+  namespace: default
+  annotations:
+    # Annotations untuk Cluster Autoscaler
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "1"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "10"
+spec:
+  clusterName: fariz-workload-cluster
+  replicas: 2
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: fariz-workload-cluster
+      version: "v1.31.0"
+      bootstrap:
+        configRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+          name: fariz-workload-cluster-workers
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: GCPMachineTemplate
+        name: workload-worker-template
+
+---
+# GCP Machine Template - Workers
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: workload-worker-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/${GCP_PROJECT_ID}/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 100
+        diskType: pd-standard
+      additionalLabels:
+        cluster: fariz-workload-cluster
+        role: worker
+      additionalNetworkTags:
+      - worker
+      subnet: pcs-kubernetes
+
+---
+# KubeadmConfigTemplate for Workers
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: fariz-workload-cluster-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.local_hostname }}'
+          kubeletExtraArgs:
+            cloud-provider: external
+      files:
+      - path: /etc/kubernetes/cloud-config
+        owner: "root:root"
+        permissions: "0644"
+        content: |
+          [Global]
+          project-id = ${GCP_PROJECT_ID}
+          regional = true
+      preKubeadmCommands:
+      - echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+      - echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.conf
+      - sysctl -p
+      - mount bpffs /sys/fs/bpf -t bpf || true
+      - echo "bpffs /sys/fs/bpf bpf defaults 0 0" >> /etc/fstab

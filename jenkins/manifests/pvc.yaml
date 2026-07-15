@@ -1,0 +1,15 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-home
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: standard  # GCP pd-standard, ganti "premium-rwo" untuk SSD
+  resources:
+    requests:
+      storage: 50Gi

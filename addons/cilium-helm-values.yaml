@@ -1,0 +1,145 @@
+# ============================================================
+# Cilium Helm Values
+#
+# Install:
+#   helm repo add cilium https://helm.cilium.io/
+#   helm install cilium cilium/cilium \
+#     --namespace kube-system \
+#     -f cilium-helm-values.yaml
+#
+# Verify:
+#   cilium status
+#   cilium connectivity test
+# ============================================================
+
+# ─── kube-proxy replacement ────────────────────────────────
+# Ini yang bikin Cilium handle Service routing via eBPF
+# kube-proxy TIDAK diperlukan lagi
+kubeProxyReplacement: true
+
+# Kubernetes API server endpoint (untuk kube-proxy replacement)
+# Cilium butuh ini karena tidak ada kube-proxy yang provide Service ClusterIP
+k8sServiceHost: "REPLACE_WITH_API_SERVER_IP"  # Ganti dengan API server LB IP
+k8sServicePort: "6443"
+
+# ─── Networking ────────────────────────────────────────────
+ipam:
+  mode: "kubernetes"  # Gunakan K8s IPAM (allocate dari podCIDR)
+  operator:
+    clusterPoolIPv4PodCIDRList:
+    - "10.244.0.0/16"
+    clusterPoolIPv4MaskSize: 24
+
+# Tunnel mode (VXLAN/Geneve) atau native routing
+# Untuk GCP: native routing lebih performant jika subnet sudah setup
+tunnel: "vxlan"  # Aman untuk semua environment
+# tunnel: "disabled"  # Gunakan ini + autoDirectNodeRoutes jika native routing
+
+# ─── eBPF Features ─────────────────────────────────────────
+bpf:
+  # Masquerade via eBPF (lebih cepat dari iptables SNAT)
+  masquerade: true
+  # Mount BPF filesystem
+  autoMount:
+    enabled: true
+  # Map sizing
+  mapDynamicSizeRatio: 0.0025
+
+# ─── Load Balancing ────────────────────────────────────────
+loadBalancer:
+  # Maglev consistent hashing (performant, good distribution)
+  algorithm: "maglev"
+  # DSR (Direct Server Return) — response bypass LB, langsung ke client
+  # Bagus untuk performance, tapi butuh network support
+  mode: "snat"  # "dsr" untuk production jika network support
+  acceleration: "disabled"  # "native" jika pakai XDP-compatible NIC
+
+# ─── Hubble (Observability) ────────────────────────────────
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  ui:
+    enabled: true
+    ingress:
+      enabled: false  # Kita pakai Traefik IngressRoute sendiri
+  metrics:
+    enabled:
+    - dns
+    - drop
+    - tcp
+    - flow
+    - icmp
+    - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+    serviceMonitor:
+      enabled: false  # set true jika pakai Prometheus Operator
+    dashboards:
+      enabled: false  # set true jika pakai Grafana
+
+# ─── Network Policy ───────────────────────────────────────
+# Cilium Network Policy (lebih powerful dari K8s standard)
+policyEnforcementMode: "default"  # "default" = enforce jika ada policy
+
+# ─── Bandwidth Manager ────────────────────────────────────
+# Rate limiting per pod via eBPF
+bandwidthManager:
+  enabled: true
+  bbr: true  # BBR congestion control
+
+# ─── Operator ─────────────────────────────────────────────
+operator:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ─── Agent ─────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# ─── Security ─────────────────────────────────────────────
+# Enable Wireguard encryption (pod-to-pod encrypted)
+encryption:
+  enabled: false  # Set true untuk encrypt semua pod traffic
+  type: wireguard
+  # wireguard:
+  #   userspaceFallback: false
+
+# ─── Health ────────────────────────────────────────────────
+healthChecking: true
+healthPort: 9879
+
+# ─── GCP Specific ─────────────────────────────────────────
+# Jika pakai native routing di GCP
+# routingMode: "native"
+# ipv4NativeRoutingCIDR: "10.0.0.0/8"
+# autoDirectNodeRoutes: true
+# enableIPv4Masquerade: true
+
+# ─── Misc ──────────────────────────────────────────────────
+# Rollout restart strategy
+rollOutCiliumPods: true
+priorityClassName: "system-node-critical"
+
+# Enable local redirect policy (useful for node-local DNS)
+localRedirectPolicy: true
+
+# Socket-level load balancing (bypass netfilter for local traffic)
+socketLB:
+  enabled: true

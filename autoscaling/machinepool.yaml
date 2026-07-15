@@ -1,0 +1,111 @@
+---
+# ============================================================
+# MachineDeployment tambahan untuk autoscaling
+# Bisa punya multiple node groups dengan spec berbeda
+# ============================================================
+
+# Node Group: General Purpose (autoscaled)
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: fariz-workload-cluster-general
+  namespace: default
+  annotations:
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "1"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "10"
+  labels:
+    cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+    nodepool: general
+spec:
+  clusterName: fariz-workload-cluster
+  replicas: 2
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+      nodepool: general
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+        nodepool: general
+    spec:
+      clusterName: fariz-workload-cluster
+      version: "v1.31.0"
+      bootstrap:
+        configRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+          name: fariz-workload-cluster-workers
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: GCPMachineTemplate
+        name: workload-worker-template
+
+---
+# Node Group: High Memory (autoscaled, untuk workload memory-intensive)
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: fariz-workload-cluster-highmem
+  namespace: default
+  annotations:
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "0"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "5"
+  labels:
+    cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+    nodepool: highmem
+spec:
+  clusterName: fariz-workload-cluster
+  replicas: 0
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+      nodepool: highmem
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+        nodepool: highmem
+    spec:
+      clusterName: fariz-workload-cluster
+      version: "v1.31.0"
+      bootstrap:
+        configRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+          name: fariz-workload-cluster-highmem-workers
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: GCPMachineTemplate
+        name: workload-worker-highmem-template
+
+---
+# KubeadmConfigTemplate for High Memory workers
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfigTemplate
+metadata:
+  name: fariz-workload-cluster-highmem-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.local_hostname }}'
+          kubeletExtraArgs:
+            cloud-provider: external
+          taints:
+          - key: "workload-type"
+            value: "highmem"
+            effect: "NoSchedule"
+      files:
+      - path: /etc/kubernetes/cloud-config
+        owner: "root:root"
+        permissions: "0644"
+        content: |
+          [Global]
+          project-id = ${GCP_PROJECT_ID}
+          regional = true
+      preKubeadmCommands:
+      - echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+      - sysctl -p

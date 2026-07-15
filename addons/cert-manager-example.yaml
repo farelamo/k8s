@@ -1,0 +1,130 @@
+---
+# ============================================================
+# Contoh penggunaan cert-manager + Traefik
+# ============================================================
+
+# Option 1: Kubernetes Ingress dengan auto TLS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  namespace: default
+  annotations:
+    # cert-manager akan otomatis generate certificate
+    cert-manager.io/cluster-issuer: "letsencrypt-production"
+    # Traefik middlewares (opsional)
+    traefik.ingress.kubernetes.io/router.middlewares: "default-security-headers@kubernetescrd"
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - app.yourdomain.com
+    secretName: app-tls-cert
+  rules:
+  - host: app.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: app-service
+            port:
+              number: 80
+
+---
+# Option 2: Traefik IngressRoute dengan Certificate resource
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: app-cert
+  namespace: default
+spec:
+  secretName: app-tls-cert
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+  - app.yourdomain.com
+  - www.yourdomain.com
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: app-ingressroute
+  namespace: default
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - match: Host(`app.yourdomain.com`)
+    kind: Rule
+    services:
+    - name: app-service
+      port: 80
+    middlewares:
+    - name: security-headers
+  tls:
+    secretName: app-tls-cert
+
+---
+# Option 3: Wildcard Certificate (requires DNS-01 challenge)
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: wildcard-cert
+#   namespace: default
+# spec:
+#   secretName: wildcard-tls-cert
+#   issuerRef:
+#     name: letsencrypt-dns
+#     kind: ClusterIssuer
+#   dnsNames:
+#   - "*.yourdomain.com"
+#   - yourdomain.com
+
+---
+# Middleware: Security Headers
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: default
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    forceSTSHeader: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    frameDeny: true
+    customFrameOptionsValue: "SAMEORIGIN"
+    referrerPolicy: "strict-origin-when-cross-origin"
+    contentSecurityPolicy: "default-src 'self'"
+
+---
+# Middleware: Rate Limiting
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: default
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1m
+
+---
+# Middleware: Compress
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+  namespace: default
+spec:
+  compress:
+    excludedContentTypes:
+    - text/event-stream

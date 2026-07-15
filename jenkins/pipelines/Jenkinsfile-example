@@ -1,0 +1,93 @@
+// ============================================================
+// Contoh Jenkinsfile untuk build + deploy app ke Kubernetes
+// Pipeline ini jalan di dynamic agent pods
+// ============================================================
+
+pipeline {
+    agent none
+
+    environment {
+        REGISTRY = 'asia-southeast2-docker.pkg.dev'
+        PROJECT  = 'your-project-id'
+        REPO     = 'your-repo'
+        APP_NAME = 'my-app'
+        IMAGE    = "${REGISTRY}/${PROJECT}/${REPO}/${APP_NAME}"
+    }
+
+    stages {
+        stage('Build & Test') {
+            agent { label 'nodejs' }
+            steps {
+                container('node') {
+                    sh 'npm ci'
+                    sh 'npm run lint'
+                    sh 'npm run test'
+                    sh 'npm run build'
+                }
+                stash includes: 'dist/**,Dockerfile,k8s/**', name: 'build-output'
+            }
+        }
+
+        stage('Docker Build & Push') {
+            agent { label 'docker' }
+            steps {
+                unstash 'build-output'
+                container('kaniko') {
+                    sh """
+                        /kaniko/executor \
+                            --context=\$(pwd) \
+                            --dockerfile=Dockerfile \
+                            --destination=${IMAGE}:${BUILD_NUMBER} \
+                            --destination=${IMAGE}:latest \
+                            --cache=true \
+                            --cache-repo=${IMAGE}/cache
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            agent { label 'deployer' }
+            steps {
+                unstash 'build-output'
+                container('kubectl') {
+                    sh """
+                        sed -i 's|IMAGE_TAG|${IMAGE}:${BUILD_NUMBER}|g' k8s/deployment.yaml
+                        kubectl apply -f k8s/ -n staging
+                        kubectl rollout status deployment/${APP_NAME} -n staging --timeout=300s
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Production') {
+            agent { label 'deployer' }
+            when {
+                branch 'main'
+            }
+            input {
+                message "Deploy to production?"
+                ok "Yes, deploy!"
+            }
+            steps {
+                unstash 'build-output'
+                container('kubectl') {
+                    sh """
+                        sed -i 's|IMAGE_TAG|${IMAGE}:${BUILD_NUMBER}|g' k8s/deployment.yaml
+                        kubectl apply -f k8s/ -n production
+                        kubectl rollout status deployment/${APP_NAME} -n production --timeout=300s
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Pipeline failed! Build: ${BUILD_NUMBER}"
+        }
+        success {
+            echo "Pipeline succeeded! Image: ${IMAGE}:${BUILD_NUMBER}"
+        }
+    }
+}

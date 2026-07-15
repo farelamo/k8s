@@ -1,0 +1,34 @@
+---
+# ============================================================
+# cert-manager - Auto TLS via Let's Encrypt
+# Deploy di workload cluster via ClusterResourceSet
+# ============================================================
+apiVersion: addons.cluster.x-k8s.io/v1beta1
+kind: ClusterResourceSet
+metadata:
+  name: cert-manager-crs
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+  resources:
+  - name: cert-manager-install
+    kind: ConfigMap
+  strategy: ApplyOnce
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-manager-install
+  namespace: default
+data:
+  cert-manager.yaml: |
+    # Namespace
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cert-manager
+      labels:
+        app.kubernetes.io/name: cert-manager

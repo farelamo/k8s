@@ -1,0 +1,7 @@
+# Credentials - JANGAN commit
+credentials/
+*.json
+kubeconfigs/
+
+# Generated files
+*.kubeconfig

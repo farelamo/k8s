@@ -1,0 +1,127 @@
+# ============================================================
+# Jenkins Helm Values
+#
+# Install:
+#   helm repo add jenkins https://charts.jenkins.io
+#   helm install jenkins jenkins/jenkins \
+#     --namespace jenkins --create-namespace \
+#     -f jenkins/helm-values.yaml
+# ============================================================
+
+controller:
+  image: jenkins/jenkins
+  tag: lts-jdk17
+  imagePullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  javaOpts: "-Xmx2g -Xms512m"
+  numExecutors: 0
+
+  installPlugins:
+  - kubernetes
+  - workflow-aggregator
+  - git
+  - configuration-as-code
+  - docker-workflow
+  - credentials-binding
+  - pipeline-stage-view
+  - blueocean
+  - prometheus
+  - job-dsl
+  - kubernetes-credentials-provider
+  - pipeline-utility-steps
+
+  JCasC:
+    configScripts:
+      cloud: |
+        jenkins:
+          clouds:
+          - kubernetes:
+              name: "kubernetes"
+              namespace: "jenkins"
+              jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+              jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+              containerCapStr: "20"
+              templates:
+              - name: "default"
+                label: "default"
+                containers:
+                - name: "jnlp"
+                  image: "jenkins/inbound-agent:latest-jdk17"
+                  workingDir: "/home/jenkins/agent"
+                  resourceRequestCpu: "500m"
+                  resourceRequestMemory: "512Mi"
+                  resourceLimitCpu: "1"
+                  resourceLimitMemory: "1Gi"
+                idleMinutes: 5
+              - name: "docker"
+                label: "docker"
+                containers:
+                - name: "jnlp"
+                  image: "jenkins/inbound-agent:latest-jdk17"
+                  workingDir: "/home/jenkins/agent"
+                  resourceRequestCpu: "200m"
+                  resourceRequestMemory: "256Mi"
+                - name: "kaniko"
+                  image: "gcr.io/kaniko-project/executor:debug"
+                  command: "/busybox/sleep"
+                  args: "infinity"
+                  workingDir: "/home/jenkins/agent"
+                  resourceRequestCpu: "1"
+                  resourceRequestMemory: "1Gi"
+                  resourceLimitCpu: "2"
+                  resourceLimitMemory: "2Gi"
+                volumes:
+                - name: "docker-config"
+                  secretName: "gcr-credentials"
+                  mountPath: "/kaniko/.docker"
+                idleMinutes: 3
+
+  ingress:
+    enabled: true
+    apiVersion: networking.k8s.io/v1
+    ingressClassName: traefik
+    hostName: jenkins.yourdomain.com
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-production"
+    tls:
+    - secretName: jenkins-tls-cert
+      hosts:
+      - jenkins.yourdomain.com
+
+  adminPassword: "changeme-in-production"
+
+  serviceAccount:
+    create: true
+    name: jenkins
+
+persistence:
+  enabled: true
+  storageClass: standard
+  size: 50Gi
+  accessMode: ReadWriteOnce
+
+agent:
+  enabled: true
+  defaultsProviderTemplate: "default"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+rbac:
+  create: true
+  readSecrets: true
+
+backup:
+  enabled: false

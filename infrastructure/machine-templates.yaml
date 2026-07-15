@@ -1,0 +1,67 @@
+---
+# Control Plane Machine Template
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: workload-cp-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/your-project-id/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 50
+        diskType: pd-ssd
+      additionalLabels:
+        cluster: workload-cluster
+        role: control-plane
+      additionalNetworkTags:
+      - apiserver
+      - control-plane
+      subnet: pcs-kubernetes
+---
+# Worker Node Machine Template - Standard
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: workload-worker-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/your-project-id/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 100
+        diskType: pd-standard
+      additionalLabels:
+        cluster: workload-cluster
+        role: worker
+      additionalNetworkTags:
+      - worker
+      subnet: pcs-kubernetes
+      # Preemptible untuk cost saving (opsional)
+      # preemptible: true
+---
+# Worker Node Machine Template - High Memory (untuk autoscaling)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: workload-worker-highmem-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/your-project-id/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 100
+        diskType: pd-standard
+      additionalLabels:
+        cluster: workload-cluster
+        role: worker
+        tier: highmem
+      additionalNetworkTags:
+      - worker
+      subnet: pcs-kubernetes

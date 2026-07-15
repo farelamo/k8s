@@ -1,0 +1,25 @@
+---
+# GCP Network - Menggunakan VPC existing
+# VPC: pcs-production
+# Subnet: pcs-kubernetes (10.88.18.0/24)
+#
+# CATATAN: VPC dan subnet sudah ada, tidak perlu dibuat.
+# File ini hanya reference untuk CAPI GCPCluster resource.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPCluster
+metadata:
+  name: workload-cluster
+  namespace: default
+spec:
+  project: "${GCP_PROJECT_ID}"
+  region: "asia-southeast2"
+  network:
+    name: "pcs-production"
+    autoCreateSubnetworks: false
+    subnets:
+    - name: "pcs-kubernetes"
+      cidrBlock: "10.88.18.0/24"
+      region: "asia-southeast2"
+      description: "Subnet for all Kubernetes nodes"
+  loadBalancer:
+    apiServerInstanceGroupTagOverride: "apiserver"

@@ -1,0 +1,98 @@
+---
+# ============================================================
+# Management Cluster (untuk production, bukan kind)
+# Deploy ini jika ingin management cluster di GCP VM juga
+# ============================================================
+
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: fariz-k8s-management-cluster
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: fariz-k8s-management-cluster
+    role: management
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - "10.244.0.0/16"
+    services:
+      cidrBlocks:
+      - "10.96.0.0/12"
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: GCPCluster
+    name: fariz-k8s-management-cluster
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: fariz-k8s-management-cluster-cp
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPCluster
+metadata:
+  name: fariz-k8s-management-cluster
+  namespace: default
+spec:
+  project: "${GCP_PROJECT_ID}"
+  region: "asia-southeast2"
+  network:
+    name: "pcs-production"
+    autoCreateSubnetworks: false
+    subnets:
+    - name: "pcs-kubernetes"
+      cidrBlock: "10.88.18.0/24"
+      region: "asia-southeast2"
+
+---
+# Single node control plane (management cluster ringan)
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: fariz-k8s-management-cluster-cp
+  namespace: default
+spec:
+  replicas: 1
+  version: "v1.31.0"
+  machineTemplate:
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: GCPMachineTemplate
+      name: management-cp-template
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+          cloud-provider: external
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          cloud-provider: external
+      controllerManager:
+        extraArgs:
+          cloud-provider: external
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: management-cp-template
+  namespace: default
+spec:
+  template:
+    spec:
+      instanceType: e2-medium
+      image: projects/${GCP_PROJECT_ID}/global/images/fariz-k8s-node-v1310
+      rootVolume:
+        sizeGb: 50
+        diskType: pd-ssd
+      additionalLabels:
+        cluster: fariz-k8s-management-cluster
+        role: management
+      additionalNetworkTags:
+      - management
+      - apiserver
+      subnet: pcs-kubernetes

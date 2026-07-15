@@ -1,0 +1,100 @@
+---
+# ============================================================
+# Cilium Network Policies
+# Contoh policy untuk secure cluster
+# ============================================================
+
+# Default deny semua traffic di namespace production
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: production
+spec:
+  endpointSelector: {}
+  ingress:
+  - {}
+  egress:
+  - {}
+
+---
+# Allow DNS (semua pod butuh resolve DNS)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: production
+spec:
+  endpointSelector: {}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP
+
+---
+# Allow app menerima traffic dari Traefik (ingress)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-from-traefik
+  namespace: production
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: traefik
+        app.kubernetes.io/name: traefik
+    toPorts:
+    - ports:
+      - port: "3000"
+        protocol: TCP
+
+---
+# Allow app ke database (contoh)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-app-to-db
+  namespace: production
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: postgresql
+    toPorts:
+    - ports:
+      - port: "5432"
+        protocol: TCP
+
+---
+# Allow Jenkins agents ke registry (egress ke internet)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: jenkins-agent-egress
+  namespace: jenkins
+spec:
+  endpointSelector:
+    matchLabels:
+      jenkins/label: docker
+  egress:
+  # Allow ke Artifact Registry
+  - toCIDR:
+    - "0.0.0.0/0"
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP

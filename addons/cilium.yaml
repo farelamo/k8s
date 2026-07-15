@@ -1,0 +1,40 @@
+---
+# ============================================================
+# Cilium CNI + kube-proxy replacement
+# Deploy di workload cluster via ClusterResourceSet
+#
+# Cilium menggantikan:
+# - kube-proxy (Service routing via eBPF)
+# - CNI (pod-to-pod networking)
+# - Network Policy engine
+#
+# Install recommended via Helm (lihat cilium-helm-values.yaml)
+# ============================================================
+apiVersion: addons.cluster.x-k8s.io/v1beta1
+kind: ClusterResourceSet
+metadata:
+  name: cilium-crs
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+  resources:
+  - name: cilium-install
+    kind: ConfigMap
+  strategy: ApplyOnce
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cilium-install
+  namespace: default
+data:
+  cilium-namespace.yaml: |
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: kube-system
+      labels:
+        pod-security.kubernetes.io/enforce: privileged

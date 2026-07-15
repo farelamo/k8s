@@ -1,0 +1,35 @@
+---
+# ============================================================
+# Hubble UI - Observability dashboard dari Cilium
+# Visualisasi traffic flow antar pods real-time
+# ============================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hubble-tls
+  namespace: kube-system
+spec:
+  secretName: hubble-tls-cert
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+  - hubble.yourdomain.com
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hubble-ui
+  namespace: kube-system
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - match: Host(`hubble.yourdomain.com`)
+    kind: Rule
+    services:
+    - name: hubble-ui
+      port: 80
+  tls:
+    secretName: hubble-tls-cert

@@ -1,0 +1,149 @@
+# ============================================================
+# Traefik Helm Values
+# Install: helm repo add traefik https://traefik.github.io/charts
+#          helm install traefik traefik/traefik \
+#            --namespace traefik --create-namespace \
+#            -f traefik-helm-values.yaml
+# ============================================================
+
+# Deployment
+deployment:
+  replicas: 2
+
+# Image
+image:
+  tag: "v3.1"
+
+# IngressClass
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+
+# Entrypoints
+ports:
+  web:
+    port: 80
+    exposedPort: 80
+    protocol: TCP
+    # Redirect HTTP -> HTTPS
+    redirectTo:
+      port: websecure
+  websecure:
+    port: 443
+    exposedPort: 443
+    protocol: TCP
+    tls:
+      enabled: true
+      # cert-manager handles certificate, Traefik uses them
+      certResolver: ""
+  metrics:
+    port: 9100
+    exposedPort: 9100
+    protocol: TCP
+
+# Service
+service:
+  enabled: true
+  type: LoadBalancer
+  spec:
+    externalTrafficPolicy: Local
+  annotations:
+    # GCP Network Load Balancer
+    cloud.google.com/l4-rbs: "enabled"
+
+# Providers
+providers:
+  kubernetesCRD:
+    enabled: true
+    allowCrossNamespace: true
+  kubernetesIngress:
+    enabled: true
+
+# Dashboard
+ingressRoute:
+  dashboard:
+    enabled: true
+    entryPoints:
+    - traefik
+
+# Logs
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: true
+    format: json
+    fields:
+      headers:
+        defaultMode: drop
+        names:
+          User-Agent: keep
+          X-Forwarded-For: keep
+
+# Metrics (Prometheus)
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addRoutersLabels: true
+    addServicesLabels: true
+    service:
+      enabled: true
+    serviceMonitor:
+      enabled: false  # set true jika pakai Prometheus Operator
+
+# Resources
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Autoscaling (HPA untuk Traefik pods sendiri)
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Security Context
+securityContext:
+  capabilities:
+    drop: [ALL]
+    add: [NET_BIND_SERVICE]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+# Node affinity - prefer different nodes
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
+        topologyKey: kubernetes.io/hostname
+
+# Tolerations (jangan schedule di control-plane)
+tolerations: []
+
+# Additional arguments
+additionalArguments:
+- "--global.checknewversion=false"
+- "--global.sendanonymoususage=false"

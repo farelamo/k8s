@@ -1,0 +1,138 @@
+---
+# ============================================================
+# GCP Cloud Controller Manager
+# Required karena kubelet pakai --cloud-provider=external
+# Deploy di workload cluster
+# ============================================================
+apiVersion: addons.cluster.x-k8s.io/v1beta1
+kind: ClusterResourceSet
+metadata:
+  name: cloud-provider-gcp-crs
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: fariz-workload-cluster
+  resources:
+  - name: cloud-provider-gcp-install
+    kind: ConfigMap
+  strategy: ApplyOnce
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloud-provider-gcp-install
+  namespace: default
+data:
+  cloud-provider-gcp.yaml: |
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: cloud-controller-manager
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: system:cloud-controller-manager
+    rules:
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["create", "patch", "update"]
+    - apiGroups: [""]
+      resources: ["nodes"]
+      verbs: ["*"]
+    - apiGroups: [""]
+      resources: ["nodes/status"]
+      verbs: ["patch"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["list", "patch", "update", "watch"]
+    - apiGroups: [""]
+      resources: ["services/status"]
+      verbs: ["patch"]
+    - apiGroups: [""]
+      resources: ["serviceaccounts"]
+      verbs: ["create", "get"]
+    - apiGroups: [""]
+      resources: ["serviceaccounts/token"]
+      verbs: ["create"]
+    - apiGroups: [""]
+      resources: ["persistentvolumes"]
+      verbs: ["get", "list", "update", "watch"]
+    - apiGroups: [""]
+      resources: ["endpoints"]
+      verbs: ["create", "get", "list", "watch", "update"]
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["create", "get", "list", "watch", "update"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: system:cloud-controller-manager
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:cloud-controller-manager
+    subjects:
+    - kind: ServiceAccount
+      name: cloud-controller-manager
+      namespace: kube-system
+    ---
+    apiVersion: apps/v1
+    kind: DaemonSet
+    metadata:
+      name: cloud-controller-manager
+      namespace: kube-system
+      labels:
+        component: cloud-controller-manager
+    spec:
+      selector:
+        matchLabels:
+          component: cloud-controller-manager
+      template:
+        metadata:
+          labels:
+            component: cloud-controller-manager
+        spec:
+          serviceAccountName: cloud-controller-manager
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            effect: NoSchedule
+          - key: node.cloudprovider.kubernetes.io/uninitialized
+            value: "true"
+            effect: NoSchedule
+          containers:
+          - name: cloud-controller-manager
+            image: gcr.io/cloud-provider-gcp/cloud-controller-manager:v31.0.0
+            command:
+            - /cloud-controller-manager
+            args:
+            - --cloud-provider=gce
+            - --leader-elect=true
+            - --use-service-account-credentials=true
+            - --cloud-config=/etc/kubernetes/cloud-config
+            - --allocate-node-cidrs=true
+            - --cluster-cidr=10.244.0.0/16
+            - --v=2
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            volumeMounts:
+            - name: cloud-config
+              mountPath: /etc/kubernetes/cloud-config
+              readOnly: true
+          volumes:
+          - name: cloud-config
+            hostPath:
+              path: /etc/kubernetes/cloud-config
+              type: File
+          hostNetwork: true
