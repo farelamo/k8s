@@ -361,9 +361,9 @@ kubectl describe gcpmachine -l cluster.x-k8s.io/cluster-name=fariz-workload-clus
 
 **Get workload kubeconfig:**
 ```bash
-clusterctl get kubeconfig fariz-workload-cluster > ~/workload.kubeconfig
+clusterctl get kubeconfig fariz-workload-cluster > $HOME/workload.kubeconfig
 
-kubectl --kubeconfig=~/workload.kubeconfig get nodes
+kubectl --kubeconfig=$HOME/workload.kubeconfig get nodes
 # STATUS NotReady (belum ada CNI, normal)
 ```
 
@@ -372,7 +372,7 @@ kubectl --kubeconfig=~/workload.kubeconfig get nodes
 ## Phase 10: Install Addons di Workload Cluster
 
 ```bash
-export KUBECONFIG=~/workload.kubeconfig
+export KUBECONFIG=$HOME/workload.kubeconfig
 ```
 
 ### 10a. Cilium (CNI + kube-proxy replacement)
@@ -504,7 +504,7 @@ Autoscaler jalan di **management cluster**:
 export KUBECONFIG=~/.kube/config
 
 kubectl create secret generic management-cluster-kubeconfig \
-  --from-file=value=~/workload.kubeconfig
+  --from-file=value=$HOME/workload.kubeconfig
 
 kubectl apply -k autoscaling/
 
@@ -518,7 +518,7 @@ kubectl logs -l app=cluster-autoscaler --tail=20
 ## Phase 15: Verify
 
 ```bash
-export KUBECONFIG=~/workload.kubeconfig
+export KUBECONFIG=$HOME/workload.kubeconfig
 
 kubectl get nodes -o wide
 kubectl get pods -A | grep -v Running
@@ -555,7 +555,7 @@ kubectl describe gcpmachine <name>
 
 ### Nodes NotReady
 ```bash
-export KUBECONFIG=~/workload.kubeconfig
+export KUBECONFIG=$HOME/workload.kubeconfig
 kubectl get pods -n kube-system -l app.kubernetes.io/name=cilium
 ```
 

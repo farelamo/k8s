@@ -69,12 +69,12 @@ spec:
       skipPhases:
       - addon/kube-proxy
       nodeRegistration:
-        name: '{{ ds.meta_data.local_hostname }}'
+        name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
         kubeletExtraArgs:
           cloud-provider: external
     joinConfiguration:
       nodeRegistration:
-        name: '{{ ds.meta_data.local_hostname }}'
+        name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
         kubeletExtraArgs:
           cloud-provider: external
     clusterConfiguration:
@@ -184,7 +184,7 @@ spec:
     spec:
       joinConfiguration:
         nodeRegistration:
-          name: '{{ ds.meta_data.local_hostname }}'
+          name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
           kubeletExtraArgs:
             cloud-provider: external
       files:
