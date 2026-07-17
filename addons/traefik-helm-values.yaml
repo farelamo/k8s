@@ -1,9 +1,5 @@
 # ============================================================
-# Traefik Helm Values
-# Install: helm repo add traefik https://traefik.github.io/charts
-#          helm install traefik traefik/traefik \
-#            --namespace traefik --create-namespace \
-#            -f traefik-helm-values.yaml
+# Traefik Helm Values (compatible with Traefik chart v34+)
 # ============================================================
 
 # Deployment
@@ -25,17 +21,11 @@ ports:
     port: 80
     exposedPort: 80
     protocol: TCP
-    # Redirect HTTP -> HTTPS
-    redirectTo:
-      port: websecure
+    # Redirect HTTP -> HTTPS via additionalArguments
   websecure:
     port: 443
     exposedPort: 443
     protocol: TCP
-    tls:
-      enabled: true
-      # cert-manager handles certificate, Traefik uses them
-      certResolver: ""
   metrics:
     port: 9100
     exposedPort: 9100
@@ -48,7 +38,6 @@ service:
   spec:
     externalTrafficPolicy: Local
   annotations:
-    # GCP Network Load Balancer
     cloud.google.com/l4-rbs: "enabled"
 
 # Providers
@@ -66,20 +55,6 @@ ingressRoute:
     entryPoints:
     - traefik
 
-# Logs
-logs:
-  general:
-    level: INFO
-  access:
-    enabled: true
-    format: json
-    fields:
-      headers:
-        defaultMode: drop
-        names:
-          User-Agent: keep
-          X-Forwarded-For: keep
-
 # Metrics (Prometheus)
 metrics:
   prometheus:
@@ -90,7 +65,7 @@ metrics:
     service:
       enabled: true
     serviceMonitor:
-      enabled: false  # set true jika pakai Prometheus Operator
+      enabled: false
 
 # Resources
 resources:
@@ -101,7 +76,7 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# Autoscaling (HPA untuk Traefik pods sendiri)
+# Autoscaling (HPA)
 autoscaling:
   enabled: true
   minReplicas: 2
@@ -140,10 +115,12 @@ affinity:
             app.kubernetes.io/name: traefik
         topologyKey: kubernetes.io/hostname
 
-# Tolerations (jangan schedule di control-plane)
 tolerations: []
 
 # Additional arguments
 additionalArguments:
 - "--global.checknewversion=false"
 - "--global.sendanonymoususage=false"
+- "--entrypoints.web.http.redirections.entryPoint.to=:443"
+- "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+- "--entrypoints.websecure.http.tls=true"

@@ -414,6 +414,7 @@ kubectl apply -f addons/metrics-server.yaml
 ```bash
 TRAEFIK_IP=$(gcloud compute addresses describe fariz-traefik-lb-ip --region=asia-southeast2 --format='get(address)')
 
+helm repo add traefik https://traefik.github.io/charts
 helm install traefik traefik/traefik \
   --namespace traefik --create-namespace \
   -f addons/traefik-helm-values.yaml \
