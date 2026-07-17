@@ -36,7 +36,7 @@ spec:
       name: letsencrypt-production-key
     solvers:
     # HTTP-01 challenge via Traefik
-    - http01:`q
+    - http01:
         ingress:
           ingressClassName: traefik
 
