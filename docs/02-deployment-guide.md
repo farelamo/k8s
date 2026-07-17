@@ -44,6 +44,48 @@ Di mesin kamu (sementara, untuk SSH ke management VM):
 
 ---
 
+## PENTING: Kubeconfig Context
+
+Semua command dijalankan dari **management VM** (`fariz-k8s-management-cluster`).
+Yang membedakan target cluster adalah **KUBECONFIG**:
+
+```bash
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ TARGET: MANAGEMENT CLUSTER                                       │
+# │ Untuk: CAPI, Cluster Autoscaler, manage workload cluster         │
+# │                                                                   │
+# │   export KUBECONFIG=$HOME/.kube/config                            │
+# │   (atau unset KUBECONFIG)                                         │
+# └─────────────────────────────────────────────────────────────────┘
+
+# ┌─────────────────────────────────────────────────────────────────┐
+# │ TARGET: WORKLOAD CLUSTER                                         │
+# │ Untuk: Cilium, Traefik, cert-manager, Jenkins, Apps              │
+# │                                                                   │
+# │   export KUBECONFIG=$HOME/workload.kubeconfig                     │
+# └─────────────────────────────────────────────────────────────────┘
+```
+
+**Cek selalu sebelum jalankan command:**
+```bash
+echo $KUBECONFIG
+kubectl config current-context
+```
+
+| Phase | Target Cluster | KUBECONFIG |
+|-------|---------------|------------|
+| 1-2 | - | Dari laptop/Cloud Shell |
+| 3-6 | Management | `$HOME/.kube/config` |
+| 7 | - | gcloud (buat image) |
+| 8 | - | gcloud (reserve IP) |
+| 9 | Management | `$HOME/.kube/config` (apply CAPI manifest) |
+| 10-12 | **Workload** | `$HOME/workload.kubeconfig` |
+| 13 | **Workload** | `$HOME/workload.kubeconfig` |
+| 14 | Management | `$HOME/.kube/config` (autoscaler) |
+| 15 | Keduanya | Switch sesuai kebutuhan |
+
+---
+
 ## Phase 1: Setup GCP Project
 
 Jalankan dari laptop/Cloud Shell:
@@ -262,12 +304,18 @@ gcloud compute ssh fariz-k8s-image-builder --zone=asia-southeast2-a
 **Di dalam VM image builder:**
 ```bash
 sudo apt-get update
-sudo apt-get install -y apt-transport-https ca-certificates curl
+sudo apt-get install -y apt-transport-https ca-certificates curl \
+  conntrack socat ebtables ipset ipvsadm ethtool
 
 # Kernel modules
 cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
 overlay
 br_netfilter
+ip_vs
+ip_vs_rr
+ip_vs_wrr
+ip_vs_sh
+nf_conntrack
 EOF
 sudo modprobe overlay
 sudo modprobe br_netfilter
@@ -297,6 +345,10 @@ sudo apt-mark hold kubelet kubeadm kubectl
 
 # Pre-pull images
 sudo kubeadm config images pull --kubernetes-version=v1.31.0
+
+# VERIFY — pastikan semua ada sebelum buat image!
+which kubeadm && which conntrack && which socat && echo "ALL OK"
+sudo kubeadm init --dry-run 2>&1 | grep "\[ERROR" || echo "PREFLIGHT PASSED"
 
 # BPF filesystem untuk Cilium
 echo "bpffs /sys/fs/bpf bpf defaults 0 0" | sudo tee -a /etc/fstab
@@ -371,37 +423,60 @@ kubectl --kubeconfig=$HOME/workload.kubeconfig get nodes
 
 ## Phase 10: Install Addons di Workload Cluster
 
+> ⚠️ **SEMUA command Phase 10-13 target WORKLOAD CLUSTER!**
+
 ```bash
+# SWITCH KE WORKLOAD CLUSTER
 export KUBECONFIG=$HOME/workload.kubeconfig
+
+# Verify kamu di cluster yang benar
+kubectl config current-context
+kubectl get nodes
+# Harus tampil workload nodes, BUKAN management node
 ```
 
 ### 10a. Cilium (CNI + kube-proxy replacement)
 
 ```bash
-API_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's|https://||' | cut -d: -f1)
+# PENTING: Gunakan internal IP dari CP node, BUKAN LB external IP
+# Cek IP CP node:
+kubectl get nodes -o wide
+# Catat INTERNAL-IP dari control-plane node
 
+CP_INTERNAL_IP="10.88.18.XX"  # Ganti dengan IP CP dari output di atas
+
+helm repo add cilium https://helm.cilium.io/
 helm install cilium cilium/cilium \
   --namespace kube-system \
   --set kubeProxyReplacement=true \
-  --set k8sServiceHost="${API_SERVER}" \
+  --set k8sServiceHost="${CP_INTERNAL_IP}" \
   --set k8sServicePort=6443 \
-  --set ipam.mode=kubernetes \
+  --set ipam.mode=cluster-pool \
+  --set ipam.operator.clusterPoolIPv4PodCIDRList="{10.244.0.0/16}" \
+  --set ipam.operator.clusterPoolIPv4MaskSize=24 \
   --set hubble.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set bpf.masquerade=true \
-  --set bandwidthManager.enabled=true \
-  --set loadBalancer.algorithm=maglev \
-  --set operator.replicas=2
+  --set operator.replicas=1
 
-kubectl wait --for=condition=Ready nodes --all --timeout=300s
+# Tunggu Cilium ready
+kubectl get pods -n kube-system -l k8s-app=cilium -w
+# Tunggu semua 1/1 Running
+
+# Remove taints yang block scheduling
+kubectl taint nodes --all node.cluster.x-k8s.io/uninitialized- 2>/dev/null || true
+kubectl taint nodes --all node.cloudprovider.kubernetes.io/uninitialized- 2>/dev/null || true
+
+kubectl get nodes
+# Semua harus Ready
 ```
 
 ### 10b. Cloud Provider GCP
 
-```bash
-kubectl apply -f addons/cloud-provider-gcp.yaml
-```
+> **SKIP untuk sekarang** — GCP CCM image belum tersedia di registry publik untuk versi terbaru.
+> Tanpa CCM: LoadBalancer service tidak dapat external IP otomatis. Gunakan NodePort + manual LB.
+> Ini bisa di-fix nanti.
 
 ### 10c. Metrics Server
 
@@ -412,29 +487,67 @@ kubectl apply -f addons/metrics-server.yaml
 ### 10d. Traefik
 
 ```bash
-TRAEFIK_IP=$(gcloud compute addresses describe fariz-traefik-lb-ip --region=asia-southeast2 --format='get(address)')
-
 helm repo add traefik https://traefik.github.io/charts
 helm install traefik traefik/traefik \
   --namespace traefik --create-namespace \
-  -f addons/traefik-helm-values.yaml \
-  --set service.spec.loadBalancerIP="${TRAEFIK_IP}"
+  -f addons/traefik-helm-values.yaml
 
+# Verify pods running
+kubectl get pods -n traefik
+# Harus Running
+
+# External IP akan <pending> tanpa CCM — akses via NodePort:
 kubectl get svc traefik -n traefik
-# EXTERNAL-IP harus = TRAEFIK_IP
+# Catat NodePort (misal 80:30236, 443:32485)
+# Akses via: http://<worker-internal-ip>:<nodeport>
 ```
 
 ### 10e. cert-manager
 
 ```bash
+helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
-  -f addons/cert-manager-helm-values.yaml
+  --set crds.enabled=true
 
 kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=120s
 
 export ACME_EMAIL="kamu@yourdomain.com"
 envsubst < addons/cert-manager-issuers.yaml | kubectl apply -f -
+```
+
+### 10f. Storage (untuk Jenkins PVC)
+
+```bash
+# Buat StorageClass + PV (hostPath, karena belum ada GCP CSI driver)
+cat <<'EOF' | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jenkins-local-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: standard
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /mnt/jenkins-data
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: jenkins
+    name: jenkins-home
+EOF
 ```
 
 ---
@@ -456,13 +569,42 @@ dig jenkins.yourdomain.com +short
 
 ## Phase 12: Deploy Jenkins
 
+> ⚠️ **Pastikan masih pakai WORKLOAD kubeconfig!** `echo $KUBECONFIG` → harus `workload.kubeconfig`
+
 ```bash
+# Buat PVC yang bind ke PV dari Phase 10f
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-home
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: standard
+  volumeName: jenkins-local-pv
+  resources:
+    requests:
+      storage: 50Gi
+EOF
+
+# Verify PVC Bound
+kubectl get pvc -n jenkins
+# STATUS harus: Bound
+
+# Deploy Jenkins
 kubectl apply -f jenkins/manifests/
 
 kubectl get pods -n jenkins -w
-# Tunggu Running (3-5 menit)
+# Tunggu Running (3-5 menit, download plugins)
 
-# Akses: https://jenkins.yourdomain.com
+# Test akses via Traefik NodePort
+# kubectl get svc traefik -n traefik (catat NodePort)
+# curl -s http://<worker-ip>:<nodeport> -H "Host: jenkins.yourdomain.com"
+
 # Username: admin / Password: admin123 (GANTI!)
 ```
 
@@ -499,10 +641,15 @@ done
 
 ## Phase 14: Deploy Cluster Autoscaler
 
-Autoscaler jalan di **management cluster**:
+> ⚠️ **SWITCH KE MANAGEMENT CLUSTER!** Autoscaler jalan di management, bukan workload.
 
 ```bash
-export KUBECONFIG=~/.kube/config
+# SWITCH KE MANAGEMENT CLUSTER
+export KUBECONFIG=$HOME/.kube/config
+
+# Verify
+kubectl config current-context
+# Harus management context
 
 kubectl create secret generic management-cluster-kubeconfig \
   --from-file=value=$HOME/workload.kubeconfig
@@ -534,13 +681,18 @@ curl -sI https://jenkins.yourdomain.com | head -5
 
 ```
 ✓ Management Cluster  — 1 VM (e2-medium, 30GB), kubeadm, always-on
-✓ Workload Cluster    — 3 CP + 2 Workers (e2-medium, 30GB), HA
-✓ Cilium              — CNI + kube-proxy replacement
-✓ Traefik             — Ingress, static IP
+✓ Workload Cluster    — 1 CP + 2 Workers (e2-medium, 30GB)
+✓ Cilium              — CNI + kube-proxy replacement (cluster-pool IPAM)
+✓ Traefik             — Ingress (NodePort sementara, CCM pending)
 ✓ cert-manager        — Auto TLS Let's Encrypt
 ✓ Jenkins             — CI/CD, dynamic agents
-✓ Cluster Autoscaler  — Scale workers 1-10
+✓ Cluster Autoscaler  — Scale workers 1-10 (deploy after CCM fix)
 ✓ Hubble              — Network observability
+
+⚠️  TODO (nanti):
+- Fix GCP Cloud Controller Manager (CCM) → enable LoadBalancer external IP
+- Atau setup manual GCP Network LB → forward ke Traefik NodePort
+- Scale CP ke 3 nodes (sekarang 1 dulu)
 ```
 
 ---
