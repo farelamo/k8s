@@ -652,27 +652,143 @@ kubectl config current-context
 # Harus management context
 
 kubectl create secret generic management-cluster-kubeconfig \
-  --from-file=value=$HOME/workload.kubeconfig
+  --from-file=value=$HOME/workload.kubeconfig \
+  --namespace=kube-system
 
-kubectl apply -k autoscaling/
+kubectl apply -k autoscaling/base/
+
+# PENTING: Autoscaler pakai in-cluster config (management).
+# Hapus --kubeconfig flag jika ada, biar baca CAPI resources dari management:
+kubectl set args deployment/cluster-autoscaler -n kube-system -- \
+  --cloud-provider=clusterapi \
+  --namespace=default \
+  --scale-down-enabled=true \
+  --scale-down-delay-after-add=5m \
+  --scale-down-unneeded-time=5m \
+  --scale-down-utilization-threshold=0.5 \
+  --max-node-provision-time=15m \
+  --balance-similar-node-groups=true \
+  --skip-nodes-with-local-storage=false \
+  --expander=least-waste \
+  --v=4
 
 # Verify
-kubectl get pods -l app=cluster-autoscaler
-kubectl logs -l app=cluster-autoscaler --tail=20
+kubectl get pods -n kube-system -l app=cluster-autoscaler
+# Harus 1/1 Running
+
+kubectl logs -n kube-system -l app=cluster-autoscaler --tail=10
+# Harus ada: "discovered node group: MachineDeployment/default/fariz-workload-cluster-..."
 ```
 
 ---
 
-## Phase 15: Verify
+## Phase 15: Akses Jenkins (Sementara via NodePort)
+
+Tanpa CCM, LoadBalancer tidak dapat external IP otomatis.
+Opsi akses sementara:
+
+### Opsi A: SSH Tunnel (dari laptop)
 
 ```bash
+# Cek NodePort dari Traefik
 export KUBECONFIG=$HOME/workload.kubeconfig
-
-kubectl get nodes -o wide
-kubectl get pods -A | grep -v Running
 kubectl get svc traefik -n traefik
-kubectl get certificates -A
-curl -sI https://jenkins.yourdomain.com | head -5
+# Catat port HTTP (misal 80:30236)
+
+# Dari laptop — buat tunnel
+gcloud compute ssh fariz-workload-cluster-workers-6lrvx-dw8bp \
+  --zone=asia-southeast2-a \
+  --tunnel-through-iap \
+  -- -L 8080:localhost:30236
+
+# Buka browser: http://localhost:8080
+# Tambah header Host jika pakai IngressRoute: tidak perlu untuk tunnel langsung ke Jenkins
+```
+
+### Opsi B: Tambah External IP ke Worker (cepat, untuk testing)
+
+```bash
+# Dari laptop
+gcloud compute instances add-access-config fariz-workload-cluster-workers-6lrvx-dw8bp \
+  --zone=asia-southeast2-a
+
+# Cek IP
+gcloud compute instances describe fariz-workload-cluster-workers-6lrvx-dw8bp \
+  --zone=asia-southeast2-a --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
+
+# Akses: http://<EXTERNAL-IP>:30236
+# Dengan Host header untuk Jenkins: 
+# curl http://<EXTERNAL-IP>:30236 -H "Host: jenkins.yourdomain.com"
+```
+
+### Opsi C: Manual GCP Load Balancer (production-ready)
+
+```bash
+# Dari laptop — buat instance group
+gcloud compute instance-groups unmanaged create fariz-k8s-workers-ig \
+  --zone=asia-southeast2-a
+
+gcloud compute instance-groups unmanaged add-instances fariz-k8s-workers-ig \
+  --zone=asia-southeast2-a \
+  --instances=fariz-workload-cluster-workers-6lrvx-dw8bp,fariz-workload-cluster-workers-6lrvx-vhsb6
+
+# Health check (ganti 30236 dengan NodePort HTTP kamu)
+gcloud compute health-checks create http fariz-k8s-http-check \
+  --port=30236 \
+  --request-path=/
+
+# Backend service
+gcloud compute backend-services create fariz-k8s-backend \
+  --protocol=HTTP \
+  --health-checks=fariz-k8s-http-check \
+  --port-name=http \
+  --global
+
+gcloud compute backend-services add-backend fariz-k8s-backend \
+  --instance-group=fariz-k8s-workers-ig \
+  --instance-group-zone=asia-southeast2-a \
+  --global
+
+# URL map
+gcloud compute url-maps create fariz-k8s-urlmap \
+  --default-service=fariz-k8s-backend
+
+# HTTP proxy
+gcloud compute target-http-proxies create fariz-k8s-http-proxy \
+  --url-map=fariz-k8s-urlmap
+
+# Forwarding rule (reserve IP dulu jika belum)
+gcloud compute forwarding-rules create fariz-k8s-http-rule \
+  --global \
+  --target-http-proxy=fariz-k8s-http-proxy \
+  --ports=80 \
+  --address=fariz-traefik-lb-ip
+
+# Cek IP
+gcloud compute addresses describe fariz-traefik-lb-ip --global --format='get(address)'
+# DNS: *.yourdomain.com → IP ini
+```
+
+---
+
+## Phase 16: Verify Everything
+
+```bash
+# Management cluster
+export KUBECONFIG=$HOME/.kube/config
+kubectl get pods -n kube-system -l app=cluster-autoscaler  # Running
+kubectl get machines                                         # All Running/Provisioned
+
+# Workload cluster
+export KUBECONFIG=$HOME/workload.kubeconfig
+kubectl get nodes -o wide                                    # All Ready
+kubectl get pods -A | grep -v Running                        # No stuck pods
+kubectl get pods -n traefik                                  # Traefik Running
+kubectl get pods -n jenkins                                  # Jenkins Running
+kubectl get pods -n cert-manager                             # cert-manager Running
+kubectl get pods -n kube-system -l k8s-app=cilium            # Cilium Running
+kubectl get svc traefik -n traefik                           # NodePort active
+kubectl get certificates -A                                  # TLS status
 ```
 
 ---
@@ -683,16 +799,16 @@ curl -sI https://jenkins.yourdomain.com | head -5
 ✓ Management Cluster  — 1 VM (e2-medium, 30GB), kubeadm, always-on
 ✓ Workload Cluster    — 1 CP + 2 Workers (e2-medium, 30GB)
 ✓ Cilium              — CNI + kube-proxy replacement (cluster-pool IPAM)
-✓ Traefik             — Ingress (NodePort sementara, CCM pending)
+✓ Traefik             — Ingress (NodePort / manual LB)
 ✓ cert-manager        — Auto TLS Let's Encrypt
 ✓ Jenkins             — CI/CD, dynamic agents
-✓ Cluster Autoscaler  — Scale workers 1-10 (deploy after CCM fix)
+✓ Cluster Autoscaler  — Running, detected node groups (min 1, max 10)
 ✓ Hubble              — Network observability
 
-⚠️  TODO (nanti):
-- Fix GCP Cloud Controller Manager (CCM) → enable LoadBalancer external IP
-- Atau setup manual GCP Network LB → forward ke Traefik NodePort
-- Scale CP ke 3 nodes (sekarang 1 dulu)
+⚠️  TODO (improvement nanti):
+- GCP Cloud Controller Manager (CCM) → auto LoadBalancer (image belum ready di registry)
+- Scale CP ke 3 nodes untuk HA
+- GCP PD CSI Driver → dynamic PVC provisioning (sekarang pakai hostPath)
 ```
 
 ---
