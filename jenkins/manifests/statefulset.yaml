@@ -23,9 +23,15 @@ spec:
       serviceAccountName: jenkins
       securityContext:
         fsGroup: 1000
-        runAsUser: 1000
-        runAsNonRoot: true
       initContainers:
+      - name: fix-permissions
+        image: busybox:latest
+        command: ["sh", "-c", "chown -R 1000:1000 /var/jenkins_home"]
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
       - name: install-plugins
         image: jenkins/jenkins:lts-jdk17
         command:
