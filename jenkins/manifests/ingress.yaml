@@ -11,7 +11,7 @@ spec:
     name: letsencrypt-production
     kind: ClusterIssuer
   dnsNames:
-  - jenkins.yourdomain.com
+  - jenkins-fariz.pcsindonesia.com
 
 ---
 # IngressRoute via Traefik
@@ -26,7 +26,7 @@ spec:
   entryPoints:
   - websecure
   routes:
-  - match: Host(`jenkins.yourdomain.com`)
+  - match: Host(`jenkins-fariz.pcsindonesia.com`)
     kind: Rule
     services:
     - name: jenkins

@@ -88,13 +88,13 @@ controller:
     enabled: true
     apiVersion: networking.k8s.io/v1
     ingressClassName: traefik
-    hostName: jenkins.yourdomain.com
+    hostName: jenkins-fariz.pcsindonesia.com
     annotations:
       cert-manager.io/cluster-issuer: "letsencrypt-production"
     tls:
     - secretName: jenkins-tls-cert
       hosts:
-      - jenkins.yourdomain.com
+      - jenkins-fariz.pcsindonesia.com
 
   adminPassword: "changeme-in-production"
 

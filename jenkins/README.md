@@ -27,7 +27,7 @@
 │  └─────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  ┌─────────────────────┐                                     │
-│  │ Traefik IngressRoute│── https://jenkins.yourdomain.com    │
+│  │ Traefik IngressRoute│── https://jenkins-fariz.pcsindonesia.com │
 │  └─────────────────────┘                                     │
 └─────────────────────────────────────────────────────────────┘
 ```

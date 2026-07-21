@@ -157,8 +157,8 @@ data:
 
     unclassified:
       location:
-        url: "https://jenkins.yourdomain.com/"
-        adminAddress: "admin@yourdomain.com"
+        url: "https://jenkins-fariz.pcsindonesia.com/"
+        adminAddress: "admin@pcsindonesia.com"
 
       globalLibraries:
         libraries:
