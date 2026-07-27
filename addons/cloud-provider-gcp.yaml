@@ -16,7 +16,7 @@ spec:
   resources:
   - name: cloud-provider-gcp-install
     kind: ConfigMap
-  strategy: ApplyOnce
+  strategy: Reconcile
 
 ---
 apiVersion: v1
@@ -106,6 +106,8 @@ data:
           - key: node.cloudprovider.kubernetes.io/uninitialized
             value: "true"
             effect: NoSchedule
+          - key: node.kubernetes.io/not-ready
+            effect: NoSchedule
           containers:
           - name: cloud-controller-manager
             image: gcr.io/cloud-provider-gcp/cloud-controller-manager:v31.0.0
@@ -116,8 +118,8 @@ data:
             - --leader-elect=true
             - --use-service-account-credentials=true
             - --cloud-config=/etc/kubernetes/cloud-config
-            - --allocate-node-cidrs=true
-            - --cluster-cidr=10.244.0.0/16
+            - --allocate-node-cidrs=false
+            - --configure-cloud-routes=false
             - --v=2
             resources:
               requests:
