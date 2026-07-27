@@ -472,11 +472,65 @@ kubectl get nodes
 # Semua harus Ready
 ```
 
-### 10b. Cloud Provider GCP
+### 10b. Cloud Provider GCP (CCM)
 
-> **SKIP untuk sekarang** — GCP CCM image belum tersedia di registry publik untuk versi terbaru.
-> Tanpa CCM: LoadBalancer service tidak dapat external IP otomatis. Gunakan NodePort + manual LB.
-> Ini bisa di-fix nanti.
+CCM (Cloud Controller Manager) yang menjembatani cluster dengan GCP API. Fungsinya:
+
+- **cloud-node-controller**: baca metadata VM GCP → populate `INTERNAL-IP`, `EXTERNAL-IP`, zone, region ke Node object. Menghapus taint `node.cloudprovider.kubernetes.io/uninitialized` sehingga workload bisa scheduled.
+- **cloud-node-lifecycle-controller**: hapus Node object jika VM sudah dihapus di GCP.
+- **service-lb-controller**: provisioning GCP LoadBalancer (Target Pool + Forwarding Rule) otomatis saat ada `Service type: LoadBalancer`.
+
+**Deploy CCM ke workload cluster (via CAPI ClusterResourceSet dari management cluster):**
+
+Deployment CCM di-manage lewat `ClusterResourceSet` CAPI. File-nya sudah include:
+- ServiceAccount + ClusterRole + ClusterRoleBinding
+- RoleBinding ke built-in `extension-apiserver-authentication-reader` (biar CCM bisa baca request-header CA)
+- DaemonSet CCM (jalan di control-plane node)
+
+```bash
+# SWITCH KE MANAGEMENT CLUSTER
+export KUBECONFIG=$HOME/.kube/config
+
+# Apply — CAPI otomatis push manifest ini ke workload cluster
+kubectl apply -f addons/cloud-provider-gcp.yaml
+
+# Verify CRS terbaca CAPI
+kubectl get clusterresourceset
+kubectl describe clusterresourceset cloud-provider-gcp-crs
+```
+
+**Verify CCM jalan di workload cluster:**
+
+```bash
+export KUBECONFIG=$HOME/workload.kubeconfig
+
+# CCM DaemonSet harus muncul (jalan di CP node saja)
+kubectl get ds -n kube-system cloud-controller-manager
+
+# Pod harus Running
+kubectl get pods -n kube-system -l component=cloud-controller-manager
+
+# Cek log — pastikan tiga controller start dan tidak crash
+kubectl logs -n kube-system -l component=cloud-controller-manager --tail=30
+# Cari log seperti:
+#   Started "service-lb-controller"
+#   Started "cloud-node-controller"
+#   Started "cloud-node-lifecycle-controller"
+```
+
+**Efek setelah CCM Running:**
+
+```bash
+# Nodes langsung dapat IP + zone label
+kubectl get nodes -o wide
+# INTERNAL-IP dan EXTERNAL-IP harus terisi, bukan <none>
+
+# Taint uninitialized harus hilang
+kubectl describe nodes | grep Taints
+# Tidak boleh ada node.cloudprovider.kubernetes.io/uninitialized
+```
+
+Jika CCM crash / stuck, lihat section **Troubleshooting → CCM Issues** di bawah.
 
 ### 10c. Metrics Server
 
@@ -485,6 +539,9 @@ kubectl apply -f addons/metrics-server.yaml
 ```
 
 ### 10d. Traefik
+
+> ⚠️ **PENTING**: Pastikan `traefik-helm-values.yaml` **TIDAK** ada annotation `cloud.google.com/l4-rbs: "enabled"`.
+> Lihat section **Design Decisions → Kenapa Target Pool, bukan RBS** untuk penjelasan.
 
 ```bash
 helm repo add traefik https://traefik.github.io/charts
@@ -496,11 +553,14 @@ helm install traefik traefik/traefik \
 kubectl get pods -n traefik
 # Harus Running
 
-# External IP akan <pending> tanpa CCM — akses via NodePort:
-kubectl get svc traefik -n traefik
-# Catat NodePort (misal 80:30236, 443:32485)
-# Akses via: http://<worker-internal-ip>:<nodeport>
+# Setelah 30-60 detik, CCM provisioning LoadBalancer di GCP:
+kubectl get svc traefik -n traefik -w
+# Tunggu sampai EXTERNAL-IP keluar (bukan <pending>)
+# Contoh: 34.101.46.134
 ```
+
+Jika `EXTERNAL-IP` stuck di `<pending>` >2 menit, lihat section
+**Troubleshooting → LoadBalancer stuck pending**.
 
 ### 10e. cert-manager
 
@@ -512,7 +572,7 @@ helm install cert-manager jetstack/cert-manager \
 
 kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=120s
 
-export ACME_EMAIL="kamu@yourdomain.com"
+export ACME_EMAIL="admin@pcsindonesia.com"  # ganti dengan email real
 envsubst < addons/cert-manager-issuers.yaml | kubectl apply -f -
 ```
 
@@ -554,15 +614,27 @@ EOF
 
 ## Phase 11: Setup DNS
 
-Buat A record di DNS provider:
-
-```
-A    *.yourdomain.com    → <TRAEFIK_IP>
-```
-
-Verify:
+**Ambil External IP Traefik:**
 ```bash
-dig jenkins.yourdomain.com +short
+export KUBECONFIG=$HOME/workload.kubeconfig
+kubectl get svc traefik -n traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+**Buat A record di Cloudflare** (atau DNS provider lain):
+
+| Type | Name | Content | Proxy |
+|------|------|---------|-------|
+| A | `jenkins-fariz` | `<TRAEFIK_EXTERNAL_IP>` | DNS only (grey cloud) |
+
+> **Kenapa DNS only (grey cloud)**: cert-manager pakai HTTP-01 challenge (default).
+> Cloudflare proxy on = HTTP-01 gagal karena traffic ke-intercept Cloudflare.
+> Untuk enable proxy on, harus switch ke DNS-01 challenge (butuh API token Cloudflare
+> dan konfigurasi tambahan di cert-manager).
+
+**Verify DNS propagate:**
+```bash
+dig jenkins-fariz.pcsindonesia.com +short
+# Harus return IP yang sama dengan Traefik External IP
 ```
 
 ---
@@ -601,10 +673,16 @@ kubectl apply -f jenkins/manifests/
 kubectl get pods -n jenkins -w
 # Tunggu Running (3-5 menit, download plugins)
 
-# Test akses via Traefik NodePort
-# kubectl get svc traefik -n traefik (catat NodePort)
-# curl -s http://<worker-ip>:<nodeport> -H "Host: jenkins.yourdomain.com"
+# Test akses (setelah DNS propagate dan cert issued)
+curl -v https://jenkins-fariz.pcsindonesia.com
+# Sertifikat auto-issued oleh cert-manager (1-2 menit setelah DNS ready)
 
+# Cek status certificate
+kubectl get certificate -n jenkins
+kubectl describe certificate jenkins-tls -n jenkins
+# READY: True → siap dipakai
+
+# Buka browser: https://jenkins-fariz.pcsindonesia.com
 # Username: admin / Password: admin123 (GANTI!)
 ```
 
@@ -682,91 +760,45 @@ kubectl logs -n kube-system -l app=cluster-autoscaler --tail=10
 
 ---
 
-## Phase 15: Akses Jenkins (Sementara via NodePort)
+## Phase 15: Akses Jenkins
 
-Tanpa CCM, LoadBalancer tidak dapat external IP otomatis.
-Opsi akses sementara:
-
-### Opsi A: SSH Tunnel (dari laptop)
+Dengan CCM aktif, Traefik service otomatis dapat External IP. Akses via
+`https://jenkins-fariz.pcsindonesia.com` setelah DNS + cert siap.
 
 ```bash
-# Cek NodePort dari Traefik
 export KUBECONFIG=$HOME/workload.kubeconfig
-kubectl get svc traefik -n traefik
-# Catat port HTTP (misal 80:30236)
 
-# Dari laptop — buat tunnel
+# Verify External IP Traefik
+kubectl get svc traefik -n traefik
+# EXTERNAL-IP harus terisi (bukan <pending>)
+
+# Verify certificate sudah issued
+kubectl get certificate -n jenkins
+# READY: True
+
+# Test dari luar
+curl -v https://jenkins-fariz.pcsindonesia.com
+
+# Buka browser: https://jenkins-fariz.pcsindonesia.com
+# Username: admin / Password: admin123 (GANTI SEGERA!)
+```
+
+**Kalau ada masalah**: lihat section **Troubleshooting** di bawah.
+
+---
+
+### Fallback: Akses via SSH Tunnel (untuk debug)
+
+Berguna kalau LB belum ready atau debug internal traffic:
+
+```bash
+# Dari laptop
 gcloud compute ssh fariz-workload-cluster-workers-6lrvx-dw8bp \
   --zone=asia-southeast2-a \
   --tunnel-through-iap \
   -- -L 8080:localhost:30236
 
-# Buka browser: http://localhost:8080
-# Tambah header Host jika pakai IngressRoute: tidak perlu untuk tunnel langsung ke Jenkins
-```
-
-### Opsi B: Tambah External IP ke Worker (cepat, untuk testing)
-
-```bash
-# Dari laptop
-gcloud compute instances add-access-config fariz-workload-cluster-workers-6lrvx-dw8bp \
-  --zone=asia-southeast2-a
-
-# Cek IP
-gcloud compute instances describe fariz-workload-cluster-workers-6lrvx-dw8bp \
-  --zone=asia-southeast2-a --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
-
-# Akses: http://<EXTERNAL-IP>:30236
-# Dengan Host header untuk Jenkins: 
-# curl http://<EXTERNAL-IP>:30236 -H "Host: jenkins.yourdomain.com"
-```
-
-### Opsi C: Manual GCP Load Balancer (production-ready)
-
-```bash
-# Dari laptop — buat instance group
-gcloud compute instance-groups unmanaged create fariz-k8s-workers-ig \
-  --zone=asia-southeast2-a
-
-gcloud compute instance-groups unmanaged add-instances fariz-k8s-workers-ig \
-  --zone=asia-southeast2-a \
-  --instances=fariz-workload-cluster-workers-6lrvx-dw8bp,fariz-workload-cluster-workers-6lrvx-vhsb6
-
-# Health check (ganti 30236 dengan NodePort HTTP kamu)
-gcloud compute health-checks create http fariz-k8s-http-check \
-  --port=30236 \
-  --request-path=/
-
-# Backend service
-gcloud compute backend-services create fariz-k8s-backend \
-  --protocol=HTTP \
-  --health-checks=fariz-k8s-http-check \
-  --port-name=http \
-  --global
-
-gcloud compute backend-services add-backend fariz-k8s-backend \
-  --instance-group=fariz-k8s-workers-ig \
-  --instance-group-zone=asia-southeast2-a \
-  --global
-
-# URL map
-gcloud compute url-maps create fariz-k8s-urlmap \
-  --default-service=fariz-k8s-backend
-
-# HTTP proxy
-gcloud compute target-http-proxies create fariz-k8s-http-proxy \
-  --url-map=fariz-k8s-urlmap
-
-# Forwarding rule (reserve IP dulu jika belum)
-gcloud compute forwarding-rules create fariz-k8s-http-rule \
-  --global \
-  --target-http-proxy=fariz-k8s-http-proxy \
-  --ports=80 \
-  --address=fariz-traefik-lb-ip
-
-# Cek IP
-gcloud compute addresses describe fariz-traefik-lb-ip --global --format='get(address)'
-# DNS: *.yourdomain.com → IP ini
+# Buka: http://localhost:8080
 ```
 
 ---
@@ -797,18 +829,20 @@ kubectl get certificates -A                                  # TLS status
 
 ```
 ✓ Management Cluster  — 1 VM (e2-medium, 30GB), kubeadm, always-on
-✓ Workload Cluster    — 1 CP + 2 Workers (e2-medium, 30GB)
+✓ Workload Cluster    — 3 CP (HA) + 1-10 Workers autoscaled (e2-medium, 30GB)
 ✓ Cilium              — CNI + kube-proxy replacement (cluster-pool IPAM)
-✓ Traefik             — Ingress (NodePort / manual LB)
-✓ cert-manager        — Auto TLS Let's Encrypt
+✓ CCM (cloud-provider-gcp) — Auto LoadBalancer + node initialization
+✓ Traefik             — Ingress with auto-provisioned GCP LoadBalancer
+✓ cert-manager        — Auto TLS Let's Encrypt (HTTP-01 challenge)
 ✓ Jenkins             — CI/CD, dynamic agents
 ✓ Cluster Autoscaler  — Running, detected node groups (min 1, max 10)
 ✓ Hubble              — Network observability
 
 ⚠️  TODO (improvement nanti):
-- GCP Cloud Controller Manager (CCM) → auto LoadBalancer (image belum ready di registry)
-- Scale CP ke 3 nodes untuk HA
 - GCP PD CSI Driver → dynamic PVC provisioning (sekarang pakai hostPath)
+- External-DNS (auto Cloudflare A record management)
+- Prometheus + Grafana stack (observability)
+- Backup strategy (Velero)
 ```
 
 ---
@@ -838,4 +872,295 @@ kubectl get challenges -A
 ```bash
 # Workload cluster tetap jalan, tapi autoscaling mati
 gcloud compute instances start fariz-k8s-management-cluster --zone=asia-southeast2-a
+```
+
+### CCM Issues
+
+**Pod CCM CrashLoopBackOff:**
+```bash
+export KUBECONFIG=$HOME/workload.kubeconfig
+kubectl logs -n kube-system -l component=cloud-controller-manager --tail=50
+
+# Error umum:
+# 1. "configmaps extension-apiserver-authentication is forbidden"
+#    → Cek RoleBinding "cloud-controller-manager:apiserver-authentication-reader" ada
+# 2. "unknown flag" atau help text tercetak
+#    → Args CCM tidak valid, cek addons/cloud-provider-gcp.yaml
+# 3. "image can't be pulled"
+#    → Image tag salah. Pastikan registry.k8s.io/cloud-provider-gcp/cloud-controller-manager:v32.2.5
+```
+
+**CCM Running tapi node masih `<none>` IP:**
+```bash
+# Force restart DaemonSet
+kubectl rollout restart daemonset cloud-controller-manager -n kube-system
+
+# Cek CCM bisa nemuin VM di GCP
+kubectl logs -n kube-system -l component=cloud-controller-manager | grep -i "searching\|zone"
+# Node name harus match dengan VM name di GCP:
+gcloud compute instances list --filter="name~fariz-workload"
+```
+
+### LoadBalancer stuck `<pending>`
+
+**1. Cek CCM Running:**
+```bash
+kubectl get pods -n kube-system -l component=cloud-controller-manager
+```
+
+**2. Cek error di CCM logs:**
+```bash
+kubectl logs -n kube-system -l component=cloud-controller-manager --tail=50 | grep -iE "error|failed"
+```
+
+**3. Jika error "implemented by alternate to cloud provider":**
+
+Ini artinya service punya annotation/finalizer/forwarding-rule yang bikin CCM ngira ini butuh RBS controller (yang ga ada di cluster self-managed). Cek:
+
+```bash
+# Cek annotation RBS
+kubectl get svc traefik -n traefik -o yaml | grep -i rbs
+# Kalau ada "cloud.google.com/l4-rbs: enabled", hapus:
+kubectl annotate svc traefik -n traefik cloud.google.com/l4-rbs-
+
+# Cek finalizer
+kubectl get svc traefik -n traefik -o yaml | grep -i finalizer
+# NetLBFinalizerV2/V3 → hapus manual
+
+# Cek forwarding rule leftover di GCP
+gcloud compute forwarding-rules list --filter="region:asia-southeast2"
+# Kalau ada yang punya BackendService (bukan targetPool), hapus:
+# gcloud compute forwarding-rules delete <NAME> --region=asia-southeast2
+```
+
+**4. Cek target pool health di GCP:**
+```bash
+gcloud compute target-pools list --regions=asia-southeast2
+gcloud compute target-pools get-health <POOL_NAME> --region=asia-southeast2
+```
+
+---
+
+## Design Decisions
+
+### Kenapa Target Pool, bukan RBS?
+
+GCP punya dua cara provisioning External LoadBalancer:
+
+**1. Legacy — Target Pool based (dipakai di setup ini)**
+- Di-handle langsung oleh CCM
+- Resource GCP yang dibikin: Target Pool + Forwarding Rule + Firewall Rule
+- Simple, dumb TCP forwarding
+
+**2. Modern — Regional Backend Service (RBS) based**
+- Di-handle oleh `l4-netlb-controller` (bagian dari `ingress-gce`)
+- Resource GCP: Backend Service + NEG + Forwarding Rule
+- Support fitur canggih: custom health check, session affinity granular, NEG-based backend
+
+**Kenapa pilih Target Pool untuk setup ini:**
+
+**1. Cluster self-managed, bukan GKE**
+
+`l4-netlb-controller` otomatis ada di GKE managed, tapi **tidak** otomatis ada di cluster CAPI self-managed. Kalau mau pakai RBS, harus deploy `ingress-gce` sendiri — setup panjang: `glbc` binary + Konnectivity + IAM tambahan + ConfigMap cluster identity + tune reconcile loop.
+
+**2. Traefik jadi single ingress = cuma butuh satu LB**
+
+Semua traffic HTTPS masuk lewat Traefik. Aplikasi lain expose via IngressRoute, ga bikin LB sendiri. Cluster cuma butuh **satu** external LB. Fitur canggih RBS (NEG, custom HC, session affinity granular) semua di-handle Traefik di L7, ga kepake dari sisi LB.
+
+**3. Multi-cloud portability**
+
+Setup ini di-desain multi-cloud (AWS, GCP, Alibaba). Legacy path punya karakteristik yang konsisten di semua cloud:
+
+| Cloud   | Legacy LB Path           |
+|---------|--------------------------|
+| GCP     | Target Pool              |
+| AWS     | Classic Load Balancer    |
+| Alibaba | Classic Load Balancer    |
+
+Semua di-handle langsung oleh CCM masing-masing, tanpa controller tambahan. Manifest Kubernetes-nya identik (`type: LoadBalancer` doang, tanpa annotation cloud-specific) di setiap cloud.
+
+**4. Skala ga butuh RBS**
+
+Batas legacy Target Pool: 1000 backend VM per pool. Cluster ini max 10 worker per pool (configured di `MachineDeployment`). Jauh dari batasan. Kalau nanti butuh 1000+ node, pattern-nya bukan "scale up 1 cluster", tapi "banyak cluster" (multi-cluster architecture) — dan setiap cluster tetap cuma butuh 1 LB.
+
+**Trade-off legacy vs RBS:**
+
+| Aspect                    | Legacy Target Pool     | RBS (via ingress-gce)         |
+|---------------------------|------------------------|-------------------------------|
+| Setup effort              | Zero (built-in CCM)    | Tinggi (deploy controller)    |
+| Max backend               | 1000 VM                | Praktis unlimited             |
+| Health check custom       | ❌ (GCP default)       | ✅ (custom port, path, dll)   |
+| Session affinity granular | ❌ (None / ClientIP)   | ✅ (cookie-based, dll)        |
+| NEG-based backend         | ❌ (traffic via node)  | ✅ (langsung ke pod IP)       |
+| Dual-stack IPv6           | ❌                     | ✅                            |
+| Portability multi-cloud   | ✅ (pattern universal) | ❌ (GCP-specific)             |
+
+**Kapan pertimbangkan migrasi ke RBS:**
+
+- Cluster individual scale >500 node (approaching Target Pool limit)
+- Butuh session affinity berbasis cookie (bukan L7 Traefik)
+- Butuh direct pod-to-LB routing (skip node hop) untuk latency critical
+- Cluster khusus GCP, bukan multi-cloud
+
+Migrasi legacy → RBS sifatnya reversible dan **tidak menghilangkan data** (LB stateless). Downtime bisa dihindari dengan pattern dual-LB + static IP reserved terpisah dari LB technology.
+
+### Kenapa Cilium, bukan Calico/Flannel?
+
+- eBPF-based → performance lebih baik, ga bergantung iptables
+- kube-proxy replacement built-in → satu binary lebih sedikit
+- Hubble untuk observability
+- Portable di semua cloud (jalan di AWS, GCP, Alibaba, on-prem)
+
+### Kenapa Cloudflare untuk DNS, bukan Cloud DNS?
+
+- Portable — 1 DNS provider untuk semua cluster di semua cloud
+- Free tier bagus buat setup awal
+- Bisa migrasi antar cloud tanpa update DNS provider
+- Kalau nanti butuh CDN/WAF, tinggal enable di Cloudflare
+
+---
+
+## Cleanup / Undeploy
+
+Kalau ingin bongkar semua dan mulai dari nol. **PENTING: Cleanup ini destructive
+dan tidak bisa di-undo.** Backup data dulu (misal Jenkins home, PVC, secret) sebelum
+jalankan.
+
+### Level 1: Bersihin workload cluster saja (management + infra masih ada)
+
+Delete resource K8s satu per satu (reverse dari deploy):
+
+```bash
+export KUBECONFIG=$HOME/workload.kubeconfig
+
+# Delete apps + Jenkins
+kubectl delete -f jenkins/manifests/ --ignore-not-found
+kubectl delete namespace jenkins --ignore-not-found
+kubectl delete namespace production --ignore-not-found
+kubectl delete namespace staging --ignore-not-found
+
+# Delete cert-manager
+kubectl delete -f addons/cert-manager-issuers.yaml --ignore-not-found
+helm uninstall cert-manager -n cert-manager
+kubectl delete namespace cert-manager --ignore-not-found
+
+# Delete Traefik (ini juga delete LoadBalancer di GCP secara otomatis)
+helm uninstall traefik -n traefik
+kubectl delete namespace traefik --ignore-not-found
+
+# Delete Cilium
+helm uninstall cilium -n kube-system
+
+# CCM di-manage lewat CRS dari management cluster (jangan delete manual di sini)
+```
+
+### Level 2: Delete workload cluster (semua VM GCP ke-clean)
+
+```bash
+export KUBECONFIG=$HOME/.kube/config
+
+# Delete Cluster resource — CAPI otomatis delete semua GCPMachine + MachineDeployment + KubeadmControlPlane
+kubectl delete -f clusters/fariz-workload-cluster.yaml
+
+# Monitor sampai semua resource gone
+kubectl get cluster -w
+kubectl get machines -w
+# Tunggu semua terhapus (5-10 menit)
+
+# Verify VM GCP sudah kehapus
+gcloud compute instances list --filter="name~fariz-workload"
+# Harus kosong
+
+# Delete CRS + ConfigMap CCM
+kubectl delete -f addons/cloud-provider-gcp.yaml
+
+# Delete autoscaler
+kubectl delete -k autoscaling/base/
+kubectl delete secret management-cluster-kubeconfig -n kube-system --ignore-not-found
+
+# Cleanup ClusterResourceSetBinding (kalau nyangkut)
+kubectl delete clusterresourcesetbinding --all -A --ignore-not-found
+```
+
+### Level 3: Delete management cluster + semua infra GCP
+
+```bash
+# Dari laptop/Cloud Shell (KUBECONFIG tidak penting lagi)
+
+# Delete management VM
+gcloud compute instances delete fariz-k8s-management-cluster --zone=asia-southeast2-a --quiet
+
+# Delete image builder (kalau masih ada)
+gcloud compute instances delete fariz-k8s-image-builder --zone=asia-southeast2-a --quiet 2>/dev/null
+
+# Delete image
+gcloud compute images delete fariz-k8s-node-v1310 --quiet
+
+# Delete static IP (kalau reserved)
+gcloud compute addresses delete fariz-traefik-lb-ip --region=asia-southeast2 --quiet 2>/dev/null
+
+# Delete firewall rules
+gcloud compute firewall-rules delete fariz-k8s-allow-ssh --quiet
+gcloud compute firewall-rules delete fariz-k8s-allow-lb-healthcheck --quiet
+gcloud compute firewall-rules delete fariz-k8s-allow-http --quiet
+
+# Cek orphaned LoadBalancer resources (bekas Traefik service)
+gcloud compute forwarding-rules list --filter="region:asia-southeast2"
+gcloud compute target-pools list --regions=asia-southeast2
+gcloud compute firewall-rules list --filter="name~k8s"
+# Delete satu-satu kalau ada leftover
+
+# Delete Artifact Registry (kalau ada)
+gcloud artifacts repositories delete docker-repo --location=asia-southeast2 --quiet
+
+# Delete Service Account
+gcloud iam service-accounts delete fariz-capi-manager@YOUR_PROJECT_ID.iam.gserviceaccount.com --quiet
+```
+
+### Level 4: Bersihin DNS di Cloudflare
+
+Manual di Cloudflare dashboard, atau via API:
+
+```bash
+# Contoh via API (butuh CF_API_TOKEN)
+curl -X DELETE "https://api.cloudflare.com/client/v4/zones/<ZONE_ID>/dns_records/<RECORD_ID>" \
+  -H "Authorization: Bearer $CF_API_TOKEN"
+```
+
+Record yang perlu dihapus:
+- `jenkins-fariz.pcsindonesia.com` (A record)
+- Wildcard atau subdomain lain kalau ada
+
+### Verify Cleanup Selesai
+
+```bash
+# Semua VM sudah tidak ada
+gcloud compute instances list
+
+# Semua LB/forwarding-rules tidak ada
+gcloud compute forwarding-rules list
+gcloud compute target-pools list --regions=asia-southeast2
+gcloud compute backend-services list
+
+# Firewall rules bersih
+gcloud compute firewall-rules list
+
+# Artifact registry bersih
+gcloud artifacts repositories list
+```
+
+### Cleanup Selective (tanpa delete cluster)
+
+Kalau cuma mau reset satu component (misal Traefik atau CCM), skip semua di atas.
+Cukup:
+
+```bash
+# Reset Traefik LB
+kubectl delete svc traefik -n traefik  # LB di GCP otomatis ke-cleanup
+# Reinstall via helm
+
+# Reset CCM
+kubectl delete clusterresourcesetbinding fariz-workload-cluster -n default
+kubectl delete -f addons/cloud-provider-gcp.yaml
+kubectl apply -f addons/cloud-provider-gcp.yaml
 ```
