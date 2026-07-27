@@ -335,9 +335,11 @@ data:
       namespace: traefik
       labels:
         app.kubernetes.io/name: traefik
-      annotations:
-        # GCP specific: gunakan Network Load Balancer (L4)
-        cloud.google.com/l4-rbs: "enabled"
+      # Catatan: annotation cloud.google.com/l4-rbs sengaja tidak dipakai.
+      # Annotation itu bikin CCM v32+ mundur (return ImplementedElsewhere)
+      # dan delegasi ke l4-netlb-controller yang tidak ada di cluster CAPI
+      # self-managed ini. Tanpa annotation, CCM handle LoadBalancer via
+      # path legacy Target Pool.
     spec:
       type: LoadBalancer
       externalTrafficPolicy: Local

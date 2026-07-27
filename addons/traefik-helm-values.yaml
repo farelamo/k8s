@@ -37,8 +37,10 @@ service:
   type: LoadBalancer
   spec:
     externalTrafficPolicy: Local
-  annotations:
-    cloud.google.com/l4-rbs: "enabled"
+  # Catatan: annotation cloud.google.com/l4-rbs sengaja tidak dipakai.
+  # Annotation itu bikin CCM (v32+) delegasi ke l4-netlb-controller yang
+  # tidak ada di cluster self-managed ini. Tanpa annotation, CCM handle
+  # LoadBalancer pakai path legacy (Target Pool) yang sesuai buat setup ini.
 
 # Providers
 providers:
