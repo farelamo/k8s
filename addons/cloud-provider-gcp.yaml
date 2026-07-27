@@ -110,7 +110,7 @@ data:
             effect: NoSchedule
           containers:
           - name: cloud-controller-manager
-            image: gcr.io/cloud-provider-gcp/cloud-controller-manager:v31.0.0
+            image: registry.k8s.io/cloud-provider-gcp/cloud-controller-manager:v32.2.5
             command:
             - /cloud-controller-manager
             args:
