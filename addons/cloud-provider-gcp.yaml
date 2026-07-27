@@ -81,6 +81,21 @@ data:
       name: cloud-controller-manager
       namespace: kube-system
     ---
+    # RoleBinding so CCM can read extension-apiserver-authentication ConfigMap
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: cloud-controller-manager:apiserver-authentication-reader
+      namespace: kube-system
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: extension-apiserver-authentication-reader
+    subjects:
+    - kind: ServiceAccount
+      name: cloud-controller-manager
+      namespace: kube-system
+    ---
     apiVersion: apps/v1
     kind: DaemonSet
     metadata:
