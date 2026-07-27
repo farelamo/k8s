@@ -118,8 +118,7 @@ data:
             - --leader-elect=true
             - --use-service-account-credentials=true
             - --cloud-config=/etc/kubernetes/cloud-config
-            - --allocate-node-cidrs=false
-            - --configure-cloud-routes=false
+            - --controllers=cloud-node,cloud-node-lifecycle,service
             - --v=2
             resources:
               requests:
